@@ -1,0 +1,260 @@
+Working, uploading to Xero, removing hardcoded credentials
+
+import azure.functions as func
+import logging
+import requests
+import base64
+from azure.storage.blob import BlobServiceClient
+import os
+from datetime import datetime
+from urllib.parse import unquote
+
+app = func.FunctionApp()
+
+# Hard-coded Xero credentials for POC (move to environment variables later)
+CLIENT_ID = "Xero App ClientID"
+CLIENT_SECRET = "Xero App Secret"
+
+def get_simple_filename(url: str) -> str:
+    """Extract and create a simple filename with date-time format"""
+    try:
+        # Get current timestamp for the filename
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
+        
+        # Create simple filename with timestamp
+        simple_filename = f"{timestamp}.pdf"
+        
+        return simple_filename
+    except Exception as e:
+        logging.error(f"Error creating filename: {str(e)}")
+        # Return a default filename if something goes wrong
+        return f"document-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+
+def get_xero_token_and_tenant_id():
+    """
+    Get an access token using Client Credentials grant and retrieve tenant ID
+    """
+    logging.info("Authenticating with Xero...")
+    # Token endpoint
+    token_url = "https://identity.xero.com/connect/token"
+    
+    # Create credentials string and encode it properly
+    credentials = f"{CLIENT_ID}:{CLIENT_SECRET}"
+    encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
+    
+    # Set headers and form data for token request
+    headers = {
+        "Authorization": f"Basic {encoded_credentials}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    
+    # Request scope for files API
+    data = {
+        "grant_type": "client_credentials",
+        "scope": "files"
+    }
+    
+    # Request the token
+    response = requests.post(token_url, headers=headers, data=data)
+    
+    if response.status_code == 200:
+        token_data = response.json()
+        access_token = token_data["access_token"]
+        logging.info("Authentication successful!")
+        
+        # Now get the tenant ID
+        logging.info("Retrieving tenant ID...")
+        connections_url = "https://api.xero.com/connections"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        conn_response = requests.get(connections_url, headers=headers)
+        
+        if conn_response.status_code == 200:
+            connections = conn_response.json()
+            if connections:
+                # Get the tenant ID from the first connection
+                tenant_id = connections[0]["tenantId"]
+                logging.info(f"Found tenant ID: {tenant_id}")
+                return {
+                    "access_token": access_token,
+                    "tenant_id": tenant_id
+                }
+            else:
+                raise Exception("No connections found for this account")
+        else:
+            logging.error(f"Failed to get connections: {conn_response.status_code}")
+            logging.error(f"Response: {conn_response.text}")
+            raise Exception("Could not retrieve tenant ID")
+    else:
+        logging.error(f"Authentication failed: {response.status_code}")
+        logging.error(f"Response: {response.text}")
+        raise Exception("Authentication failed")
+
+def upload_blob_to_xero(access_token, tenant_id, blob_client, file_name):
+    """
+    Upload file from blob storage to Xero Files API
+    """
+    logging.info(f"Preparing to upload blob to Xero: {file_name}")
+    
+    # Download the blob content
+    blob_data = blob_client.download_blob().readall()
+    
+    # Upload endpoint
+    upload_url = "https://api.xero.com/files.xro/1.0/Files"
+    
+    # Set headers for authentication
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "xero-tenant-id": tenant_id
+    }
+    
+    # Determine MIME type
+    mime_type = "application/pdf"  # We know it's a PDF
+    
+    logging.info(f"Using MIME type: {mime_type}")
+    
+    # Create multipart form data for file upload
+    files = {
+        'File': (file_name, blob_data, mime_type)
+    }
+    
+    data = {
+        'Name': file_name,
+        'Filename': file_name
+    }
+    
+    logging.info("Uploading file to Xero...")
+    
+    try:
+        # Upload the file to Xero
+        response = requests.post(
+            upload_url, 
+            headers=headers,
+            files=files,
+            data=data
+        )
+        
+        if response.status_code in (200, 201):
+            result = response.json()
+            logging.info(f"File uploaded successfully to Xero!")
+            logging.info(f"File ID: {result.get('Id')}")
+            logging.info(f"File Name: {result.get('Name')}")
+            return result
+        else:
+            logging.error(f"Error uploading file to Xero: HTTP {response.status_code}")
+            logging.error(f"Response: {response.text}")
+            return None
+    except Exception as e:
+        logging.error(f"Error uploading file to Xero: {str(e)}")
+        return None
+
+@app.route(route="showrequest", auth_level=func.AuthLevel.ANONYMOUS)
+def show_request(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("Received a Printix request.")
+    
+    try:
+        # Get request body as JSON
+        try:
+            request_json = req.get_json()
+        except ValueError:
+            return func.HttpResponse(
+                "Invalid JSON in request body",
+                status_code=400
+            )
+
+        # Extract document URL from the request
+        document_url = request_json.get('documentUrl')
+        if not document_url:
+            return func.HttpResponse(
+                "No document URL found in request",
+                status_code=400
+            )
+
+        logging.info(f"Document URL received: {document_url}")
+
+        # Create a simple filename with timestamp
+        blob_name = get_simple_filename(document_url)
+        logging.info(f"Generated blob name: {blob_name}")
+
+        # Get the connection string from app settings
+        connection_string = os.environ.get('AzureWebJobsStorage')
+        if not connection_string:
+            return func.HttpResponse(
+                "Storage connection string not configured",
+                status_code=500
+            )
+
+        # Initialize the blob service client
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        
+        # Get or create a container
+        container_name = "printix-documents"
+        try:
+            container_client = blob_service_client.get_container_client(container_name)
+            container_client.get_container_properties()
+        except Exception:
+            container_client = blob_service_client.create_container(container_name)
+
+        # Download the file from Printix URL
+        try:
+            response = requests.get(document_url, stream=True)
+            response.raise_for_status()
+
+            # Upload to blob storage with the simple filename
+            blob_client = container_client.get_blob_client(blob_name)
+            blob_client.upload_blob(response.raw, overwrite=True)
+
+            logging.info(f"File successfully uploaded to blob storage: {blob_name}")
+            
+            # Now upload the blob to Xero
+            try:
+                # Get authentication token and tenant ID for Xero
+                auth_data = get_xero_token_and_tenant_id()
+                
+                # Upload the blob to Xero
+                xero_result = upload_blob_to_xero(
+                    auth_data["access_token"],
+                    auth_data["tenant_id"],
+                    blob_client,
+                    blob_name
+                )
+                
+                xero_status = "Success" if xero_result else "Failed"
+                xero_file_id = xero_result.get('Id', 'N/A') if xero_result else 'N/A'
+                
+            except Exception as xe:
+                logging.error(f"Error in Xero upload process: {str(xe)}")
+                xero_status = f"Failed: {str(xe)}"
+                xero_file_id = "N/A"
+
+            # Create success response message
+            message = (
+                f"Document processed successfully!\n"
+                f"Stored as: {blob_name}\n"
+                f"Container: {container_name}\n"
+                f"Xero Upload: {xero_status}\n"
+                f"Xero File ID: {xero_file_id}\n"
+            )
+
+            return func.HttpResponse(
+                message,
+                mimetype="text/plain",
+                status_code=200
+            )
+
+        except requests.exceptions.RequestException as e:
+            error_message = f"Error downloading file from Printix: {str(e)}"
+            logging.error(error_message)
+            return func.HttpResponse(error_message, status_code=500)
+
+    except Exception as e:
+        error_message = f"Error processing request: {str(e)}"
+        logging.error(error_message)
+        return func.HttpResponse(
+            error_message,
+            status_code=500
+        )

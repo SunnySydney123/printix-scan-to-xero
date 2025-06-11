@@ -1,0 +1,111 @@
+working,getting post request, fetching the scan job, placing the job into Azure Blob storage with a date-time.pdf filename.
+
+import azure.functions as func
+import logging
+import requests
+from azure.storage.blob import BlobServiceClient
+import os
+from datetime import datetime
+from urllib.parse import unquote
+
+app = func.FunctionApp()
+
+def get_simple_filename(url: str) -> str:
+    """Extract and create a simple filename with date-time format"""
+    try:
+        # Get current timestamp for the filename
+        now = datetime.now()
+        timestamp = now.strftime("%Y%m%d-%H%M%S")
+        
+        # Create simple filename with timestamp
+        simple_filename = f"{timestamp}.pdf"
+        
+        return simple_filename
+    except Exception as e:
+        logging.error(f"Error creating filename: {str(e)}")
+        # Return a default filename if something goes wrong
+        return f"document-{datetime.now().strftime('%Y%m%d-%H%M%S')}.pdf"
+
+@app.route(route="showrequest", auth_level=func.AuthLevel.ANONYMOUS)
+def show_request(req: func.HttpRequest) -> func.HttpResponse:
+    logging.info("Received a Printix request.")
+    
+    try:
+        # Get request body as JSON
+        try:
+            request_json = req.get_json()
+        except ValueError:
+            return func.HttpResponse(
+                "Invalid JSON in request body",
+                status_code=400
+            )
+
+        # Extract document URL from the request
+        document_url = request_json.get('documentUrl')
+        if not document_url:
+            return func.HttpResponse(
+                "No document URL found in request",
+                status_code=400
+            )
+
+        logging.info(f"Document URL received: {document_url}")
+
+        # Create a simple filename with timestamp
+        blob_name = get_simple_filename(document_url)
+        logging.info(f"Generated blob name: {blob_name}")
+
+        # Get the connection string from app settings
+        connection_string = os.environ.get('AzureWebJobsStorage')
+        if not connection_string:
+            return func.HttpResponse(
+                "Storage connection string not configured",
+                status_code=500
+            )
+
+        # Initialize the blob service client
+        blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+        
+        # Get or create a container
+        container_name = "printix-documents"
+        try:
+            container_client = blob_service_client.get_container_client(container_name)
+            container_client.get_container_properties()
+        except Exception:
+            container_client = blob_service_client.create_container(container_name)
+
+        # Download the file from Printix URL
+        try:
+            response = requests.get(document_url, stream=True)
+            response.raise_for_status()
+
+            # Upload to blob storage with the simple filename
+            blob_client = container_client.get_blob_client(blob_name)
+            blob_client.upload_blob(response.raw, overwrite=True)
+
+            logging.info(f"File successfully uploaded to blob storage: {blob_name}")
+
+            # Create success response message
+            message = (
+                f"Document processed successfully!\n"
+                f"Stored as: {blob_name}\n"
+                f"Container: {container_name}\n"
+            )
+
+            return func.HttpResponse(
+                message,
+                mimetype="text/plain",
+                status_code=200
+            )
+
+        except requests.exceptions.RequestException as e:
+            error_message = f"Error downloading file from Printix: {str(e)}"
+            logging.error(error_message)
+            return func.HttpResponse(error_message, status_code=500)
+
+    except Exception as e:
+        error_message = f"Error processing request: {str(e)}"
+        logging.error(error_message)
+        return func.HttpResponse(
+            error_message,
+            status_code=500
+        )

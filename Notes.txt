@@ -1,0 +1,15 @@
+
+In the Python v2 model, you must explicitly give your function a name for Azure to register it as a trigger.
+Without it, Azure sees the route but no trigger name, so it skips it during Syncing triggers….
+
+
+don't choose flex consumption, choose the Consumption based plan for your Azure Function(second option)
+
+
+opened a xero.com account
+activated Demo Company
+created a custom connector in developer.xero.com , scope is Files
+invited email account to activate the connector.
+After activation, can get Client ID and Client Secret
+
+use the Client ID and Client Secret in the python code.
