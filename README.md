@@ -90,9 +90,9 @@ Printix Callback: Success
 Metadata Retrieved:
 
 - userName: John Doe
-- 
+
 - userEmail: john@example.com
-- 
+
 - workflowName: Invoice Upload
 
   
