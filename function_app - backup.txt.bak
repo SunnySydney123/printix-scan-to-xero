@@ -12,8 +12,8 @@ from urllib.parse import unquote
 app = func.FunctionApp()
 
 # Hard-coded Xero credentials for POC (move to environment variables later)
-CLIENT_ID = "37B0CCF8E1864DF3AF8CD8DE84F88C66"
-CLIENT_SECRET = "vNypQBn9rUAcvfVojbGxMxU77e3e21nil1dfl56l-MmkEZVj"
+CLIENT_ID = "37B0C******************88C66"
+CLIENT_SECRET = "vNyp**********************-MmkEZVj"
 
 def get_simple_filename(url: str) -> str:
     """Extract and create a simple filename with date-time format"""
