@@ -1,6 +1,6 @@
           📄 Azure Function: Printix → Xero PDF Uploader
 
-This Azure Function app listens for HTTP requests from Printix workflows, downloads PDF documents, retrieves associated metadata, uploads them to Xero Files API, and sends a callback notification to Printix when processing is complete.
+This Azure Function app listens for HTTP requests from Printix workflows, downloads PDF documents, retrieves associated metadata, uploads them to Xero Files API, and sends a callback notification to Printix when processing is complete. Watch technical setup instructions here, https://youtu.be/YahDDO_azEg
 
           📦 Features
 ✅ Securely downloads PDF files from Printix URLs
